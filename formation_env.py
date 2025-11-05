@@ -247,6 +247,10 @@ class MultiAgentRacecarFormationEnv:
         self.prev_actions: Dict[str, np.ndarray] = {aid: np.zeros(self.action_dim, dtype=np.float32) for aid in self.agent_ids}
         self.last_lidar_scans: Dict[str, np.ndarray] = {}
 
+        # Initialize variables used in reset() and step() - fix for uninitialized variable bug
+        self.prev_distances: Dict[str, float] = {}
+        self.success_counters: Dict[str, int] = {aid: 0 for aid in self.agent_ids}
+
         # -------------------- Public API --------------------
     def reset(self, randomize_formation: Optional[bool] = None) -> Dict[str, np.ndarray]:
         if randomize_formation is None:
@@ -259,14 +263,7 @@ class MultiAgentRacecarFormationEnv:
         p.setGravity(0, 0, -9.81)
         p.setTimeStep(1.0 / 240.0)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        
-        # Set shadows and rendering settings BEFORE loading world to ensure consistent state
-        if self.gui:
-            # Disable shadows to avoid texture artifacts on white floor
-            try:
-                p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0)
-            except Exception:
-                pass
+
         # Advance episode index and reseed per-episode RNG (formation, etc.)
         self.episode_idx += 1
         if self.base_seed is not None:

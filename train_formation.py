@@ -176,6 +176,18 @@ def main():
         collision_count = 0
         step_in_episode = 0
 
+        # Initialize diagnostic variables - fix for locals() anti-pattern
+        td_error_sum = 0.0
+        logp_mean_sum = 0.0
+        q1_min_sum = 0.0
+        q1_max_sum = 0.0
+        q2_min_sum = 0.0
+        q2_max_sum = 0.0
+        qt_min_sum = 0.0
+        qt_max_sum = 0.0
+        grad_critic_sum = 0.0
+        grad_actor_sum_dict = {aid: 0.0 for aid in env.agent_ids}
+
         while not any(done.values()):
             step_in_episode += 1
             try:
@@ -247,20 +259,18 @@ def main():
                                 for aid, aval in losses['alpha_vals'].items():
                                     if aid in alpha_sum_per_agent:
                                         alpha_sum_per_agent[aid] += float(aval)
-                            # Additional diagnostic aggregations
-                            td_error_sum = locals().get('td_error_sum', 0.0) + float(losses.get('td_error_mean', 0.0))
-                            logp_mean_sum = locals().get('logp_mean_sum', 0.0) + float(losses.get('logp_mean', 0.0))
-                            q1_min_sum = locals().get('q1_min_sum', 0.0) + float(losses.get('q1_min', 0.0))
-                            q1_max_sum = locals().get('q1_max_sum', 0.0) + float(losses.get('q1_max', 0.0))
-                            q2_min_sum = locals().get('q2_min_sum', 0.0) + float(losses.get('q2_min', 0.0))
-                            q2_max_sum = locals().get('q2_max_sum', 0.0) + float(losses.get('q2_max', 0.0))
-                            qt_min_sum = locals().get('qt_min_sum', 0.0) + float(losses.get('q_target_min', 0.0))
-                            qt_max_sum = locals().get('qt_max_sum', 0.0) + float(losses.get('q_target_max', 0.0))
-                            grad_critic_sum = locals().get('grad_critic_sum', 0.0) + float(losses.get('grad_norm_critic', 0.0))
+                            # Additional diagnostic aggregations (fixed: removed locals() anti-pattern)
+                            td_error_sum += float(losses.get('td_error_mean', 0.0))
+                            logp_mean_sum += float(losses.get('logp_mean', 0.0))
+                            q1_min_sum += float(losses.get('q1_min', 0.0))
+                            q1_max_sum += float(losses.get('q1_max', 0.0))
+                            q2_min_sum += float(losses.get('q2_min', 0.0))
+                            q2_max_sum += float(losses.get('q2_max', 0.0))
+                            qt_min_sum += float(losses.get('q_target_min', 0.0))
+                            qt_max_sum += float(losses.get('q_target_max', 0.0))
+                            grad_critic_sum += float(losses.get('grad_norm_critic', 0.0))
                             # Per-agent actor grad norms
                             if 'grad_norm_actor' in losses and isinstance(losses['grad_norm_actor'], dict):
-                                if 'grad_actor_sum_dict' not in locals():
-                                    grad_actor_sum_dict = {aid: 0.0 for aid in env.agent_ids}
                                 for aid in env.agent_ids:
                                     grad_actor_sum_dict[aid] += float(losses['grad_norm_actor'].get(aid, 0.0))
                             update_count += 1
@@ -283,18 +293,17 @@ def main():
 
             alpha_dict = {aid: alpha_sum_per_agent[aid] / update_count if update_count > 0 else 0.0
                          for aid in env.agent_ids}
-            # Compute averages for diagnostics if accumulated
-            td_error_avg = (td_error_sum / update_count) if 'td_error_sum' in locals() else 0.0
-            logp_mean_avg = (logp_mean_sum / update_count) if 'logp_mean_sum' in locals() else 0.0
-            q1_min_avg = (q1_min_sum / update_count) if 'q1_min_sum' in locals() else 0.0
-            q1_max_avg = (q1_max_sum / update_count) if 'q1_max_sum' in locals() else 0.0
-            q2_min_avg = (q2_min_sum / update_count) if 'q2_min_sum' in locals() else 0.0
-            q2_max_avg = (q2_max_sum / update_count) if 'q2_max_sum' in locals() else 0.0
-            qt_min_avg = (qt_min_sum / update_count) if 'qt_min_sum' in locals() else 0.0
-            qt_max_avg = (qt_max_sum / update_count) if 'qt_max_sum' in locals() else 0.0
-            grad_critic_avg = (grad_critic_sum / update_count) if 'grad_critic_sum' in locals() else 0.0
-            grad_actor_avg = {aid: (grad_actor_sum_dict[aid] / update_count) if 'grad_actor_sum_dict' in locals() else 0.0
-                              for aid in env.agent_ids}
+            # Compute averages for diagnostics (fixed: variables now always initialized)
+            td_error_avg = td_error_sum / update_count
+            logp_mean_avg = logp_mean_sum / update_count
+            q1_min_avg = q1_min_sum / update_count
+            q1_max_avg = q1_max_sum / update_count
+            q2_min_avg = q2_min_sum / update_count
+            q2_max_avg = q2_max_sum / update_count
+            qt_min_avg = qt_min_sum / update_count
+            qt_max_avg = qt_max_sum / update_count
+            grad_critic_avg = grad_critic_sum / update_count
+            grad_actor_avg = {aid: grad_actor_sum_dict[aid] / update_count for aid in env.agent_ids}
         else:
             critic_loss_avg = 0.0
             actor_loss_avg = 0.0

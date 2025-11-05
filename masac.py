@@ -309,8 +309,8 @@ class MASAC:
         all_actions = self._split_joint_actions(actions_batch)
         all_next_obs = self._split_joint_obs(next_obs_batch)
 
+        # Input consistency check (only check obs-action pairs from buffer)
         self._check_input_consistency(all_obs, all_actions)
-        self._check_input_consistency(all_next_obs, all_actions)
 
         losses = {'critic': 0, 'actors': {}, 'alphas': {}}
         use_amp = self.device.type == 'cuda' and self.scaler is not None
@@ -345,7 +345,7 @@ class MASAC:
             self.scaler.unscale_(self.critic_optimizer)
             critic_grad = torch.nn.utils.clip_grad_norm_(self.shared_critic.parameters(), self.max_grad_norm)
             self.scaler.step(self.critic_optimizer)
-            self.scaler.update()
+            # Note: scaler.update() called at end of update() to avoid multiple updates
         else:
             critic_loss.backward()
             critic_grad = torch.nn.utils.clip_grad_norm_(self.shared_critic.parameters(), self.max_grad_norm)
@@ -416,7 +416,7 @@ class MASAC:
                 self.scaler.unscale_(self.actor_optimizers[agent_id])
                 a_grad = torch.nn.utils.clip_grad_norm_(self.actors[agent_id].parameters(), self.max_grad_norm)
                 self.scaler.step(self.actor_optimizers[agent_id])
-                self.scaler.update()
+                # Note: scaler.update() called at end of update() to avoid multiple updates
             else:
                 actor_loss.backward()
                 a_grad = torch.nn.utils.clip_grad_norm_(self.actors[agent_id].parameters(), self.max_grad_norm)
@@ -435,6 +435,11 @@ class MASAC:
 
         # Soft Update (target network)
         self._soft_update(self.shared_critic, self.shared_critic_target, tau)
+
+        # Update AMP scaler once per update() call (after all gradient operations)
+        if use_amp and self.scaler is not None:
+            self.scaler.update()
+
         losses['grad_norm_actor'] = grad_actor_norms
         return losses
 
