@@ -54,12 +54,12 @@ class MultiAgentRacecarFormationEnv:
         slot_smoothing_factor: float = 0.3,
         circular_obstacle_center: Optional[Tuple[float, float]] = None,
         circular_obstacle_radius: float = 5.0,
-        # Reward design parameters
-        proximity_weight: float = 3.0,
+        # Reward design parameters (rebalanced for stable training)
+        proximity_weight: float = 5.0,  # Increased from 3.0 for stronger distance signal
         proximity_scale: float = 2.5,
         progress_clip: float = 0.3,
-        progress_weight_pos: float = 50.0,
-        progress_weight_neg: float = 75.0,
+        progress_weight_pos: float = 5.0,  # Reduced from 50.0 to balance with other rewards
+        progress_weight_neg: float = 7.5,  # Reduced from 75.0 to balance with other rewards
         gate_distance: float = 2.0,
         gate_scale: float = 3.0,
         speed_weight: float = 2.0,
@@ -67,8 +67,8 @@ class MultiAgentRacecarFormationEnv:
         smooth_positive_weight: float = 0.5,
         smooth_negative_slope: float = 0.25,
         smooth_threshold: float = 0.3,
-        time_penalty_base: float = 0.01,
-        time_penalty_slope: float = 0.02,
+        time_penalty_base: float = 0.1,  # Increased from 0.01 to be more noticeable
+        time_penalty_slope: float = 0.2,  # Increased from 0.02 to be more noticeable
         time_penalty_ref_dist: float = 5.0,
         time_penalty_cap: float = 2.0,
         # Success rewards
@@ -161,8 +161,10 @@ class MultiAgentRacecarFormationEnv:
         self.obstacle_seed = (self.base_seed + 4242) if self.base_seed is not None else None
         self.obstacle_rng = np.random.default_rng(self.obstacle_seed)
 
-        # obs_dim: lidar + rel_slot_pos + speed + heading_err + neighbors + collision_flag + leader_vel + slot_vel + constraint_violations + dist_to_circular_obstacle
-        self.obs_dim = self.num_rays + 2 + 1 + 1 + 3 * self.neighbor_max + 1 + 2 + 2 + 4 + 1
+        # obs_dim: lidar + rel_slot_pos + speed + heading_err + neighbors + leader_vel + slot_vel + dist_to_circular_obstacle + dist_change
+        # Removed: collision_flag (redundant with lidar), constraint_violations (always 0 due to hard constraints)
+        # Added: dist_change (historical info for better learning)
+        self.obs_dim = self.num_rays + 2 + 1 + 1 + 3 * self.neighbor_max + 2 + 2 + 1 + 1
         self.action_dim = 2
 
         self.gui = bool(gui)
@@ -886,9 +888,10 @@ class MultiAgentRacecarFormationEnv:
 
     def _get_world_slots(self) -> List[np.ndarray]:
         # Compute target formation slot positions relative to leader
-        # 1. Directly use current leader position (no prediction)
-        current_leader_pos = self.leader_pos
-        current_heading = self.leader_heading
+        # 1. Use predicted leader position for better tracking performance
+        predicted_pos, predicted_heading = self._predict_leader_position()
+        current_leader_pos = predicted_pos
+        current_heading = predicted_heading
 
         # 2. Calculate raw slots based on current position
         c, s = math.cos(current_heading), math.sin(current_heading)
@@ -957,16 +960,26 @@ class MultiAgentRacecarFormationEnv:
         boundary_collision = False
         obstacle_collision = False
 
-        # 1. Boundary constraint - improved: velocity rebounds on collision
+        # 1. Boundary constraint - physically correct velocity reflection
+        # Decompose velocity into vector form for proper reflection
+        vx_new = v_new * math.cos(psi_new)
+        vy_new = v_new * math.sin(psi_new)
+
+        # Reflect velocity components when hitting boundaries
         if x_new < -self.map_half_size or x_new > self.map_half_size:
             x_new = np.clip(x_new, -self.map_half_size, self.map_half_size)
-            v_new = -v_new * 0.3  # Rebound, lose 70% energy
+            vx_new = -vx_new * 0.3  # Reflect x-component, lose 70% energy
             boundary_collision = True
 
         if y_new < -self.map_half_size or y_new > self.map_half_size:
             y_new = np.clip(y_new, -self.map_half_size, self.map_half_size)
-            v_new = -v_new * 0.3  # Rebound, lose 70% energy
+            vy_new = -vy_new * 0.3  # Reflect y-component, lose 70% energy
             boundary_collision = True
+
+        # Recompute speed and heading from reflected velocity vector
+        if boundary_collision:
+            v_new = math.sqrt(vx_new**2 + vy_new**2)
+            psi_new = math.atan2(vy_new, vx_new)
 
         # 2. Circular obstacle constraint - revised: velocity zero on collision
         if self.has_circular_obstacle:
@@ -1031,48 +1044,13 @@ class MultiAgentRacecarFormationEnv:
             heading_error = self._angle_diff(math.atan2(rel_slot[1], rel_slot[0]), yaw) / math.pi
 
             neighbor_feats = self._neighbor_features(i, car_positions, car_velocities)
-            collided = self._has_collision(self.cars[i])
-            collision_flag = 1.0 if collided else 0.0
 
             leader_vel_norm = self.leader_vel / self.leader_max_vel if self.leader_max_vel > 0 else self.leader_vel
 
             # Add slot velocity to observation (normalized)
             slot_vel_norm = self.slot_velocities[i] / self.agent_max_speed if self.agent_max_speed > 0 else self.slot_velocities[i]
 
-            # POMDP feature: add constraint violation info (improved: use continuous values for violation degree)
-            state = self.agent_states[i]
-            x, y, v = state["x"], state["y"], state["v"]
-
-            # Position constraint violation degree (normalized)
-            x_violation = max(0, (abs(x) - self.map_half_size) / self.map_half_size)
-            y_violation = max(0, (abs(y) - self.map_half_size) / self.map_half_size)
-
-            # Velocity constraint violation degree (no reverse: agent_min_speed=0)
-            if v > self.agent_max_speed:
-                v_violation = (v - self.agent_max_speed) / self.agent_max_speed
-            elif v < self.agent_min_speed:
-                # when agent_min_speed=0, negative speed means reverse (keep limit symmetric)
-                v_violation = abs(v) / self.agent_max_speed if self.agent_min_speed == 0.0 else (self.agent_min_speed - v) / abs(self.agent_min_speed)
-            else:
-                v_violation = 0.0
-
-            # Circular obstacle constraint score
-            if self.has_circular_obstacle:
-                x_o, y_o = self.circular_obstacle_center
-                dist = math.sqrt((x - x_o)**2 + (y - y_o)**2)
-                penetration = max(0.0, self.circular_obstacle_radius - dist)
-                obstacle_violation = penetration / self.circular_obstacle_radius
-            else:
-                obstacle_violation = 0.0
-
-            constraint_vec = np.array([
-                x_violation,
-                y_violation,
-                v_violation,
-                obstacle_violation
-            ], dtype=np.float32)
-
-            # POMDP feature: add distance to circular obstacle (normalized)
+            # Distance to circular obstacle (normalized, for awareness not violation)
             if self.has_circular_obstacle:
                 x_o, y_o = self.circular_obstacle_center
                 dist_to_obstacle = math.sqrt((pos[0] - x_o)**2 + (pos[1] - y_o)**2)
@@ -1083,17 +1061,25 @@ class MultiAgentRacecarFormationEnv:
                 norm_dist = 1.0
             dist_to_obstacle_vec = np.array([norm_dist], dtype=np.float32)
 
+            # Historical info: distance change (provides velocity information toward slot)
+            slot_world = world_slots[i]
+            current_dist_to_slot = float(np.linalg.norm(slot_world - pos))
+            if aid in self.prev_distances:
+                dist_change = (self.prev_distances[aid] - current_dist_to_slot) / self.map_half_size
+            else:
+                dist_change = 0.0
+            dist_change_vec = np.array([dist_change], dtype=np.float32)
+
             vec = np.concatenate([
                 lidar,
                 rel_slot.astype(np.float32),
                 np.array([speed], dtype=np.float32),
                 np.array([heading_error], dtype=np.float32),
                 neighbor_feats,
-                np.array([collision_flag], dtype=np.float32),
                 leader_vel_norm.astype(np.float32),
                 slot_vel_norm.astype(np.float32),
-                constraint_vec,
                 dist_to_obstacle_vec,
+                dist_change_vec,
             ], axis=0)
             assert vec.shape[0] == self.obs_dim, f"obs_dim mismatch: {vec.shape[0]} != {self.obs_dim}"
             obs[aid] = vec
@@ -1140,8 +1126,6 @@ class MultiAgentRacecarFormationEnv:
                 continue
 
             # ==================== 1. Slot distance: core reward ====================
-            # Exponential reward: closer distance → higher reward
-            dist_reward = 10.0 * np.exp(-current_dist / 2.0)
             # Negative proximity cost (saturating with tanh): closer -> ~0, far -> -proximity_weight
             proximity_reward = - self.proximity_weight * math.tanh(current_dist / max(1e-6, self.proximity_scale))
 
@@ -1160,7 +1144,11 @@ class MultiAgentRacecarFormationEnv:
             agent_speed = float(np.linalg.norm(vel))
             speed_diff = abs(slot_speed - agent_speed)
 
-            speed_reward = math.exp(-((max(current_dist - self.gate_distance, 0.0) / max(1e-6, self.gate_scale)) ** 2)) * (self.speed_weight * math.exp(-speed_diff / max(1e-6, self.speed_sigma)))
+            # Simplified gate function: only reward speed matching when close to slot
+            if current_dist < self.gate_distance:
+                speed_reward = self.speed_weight * math.exp(-speed_diff / max(1e-6, self.speed_sigma))
+            else:
+                speed_reward = 0.0
 
             # ==================== 4. Obstacle penalty ====================
             obstacle_penalty = 0.0
@@ -1195,12 +1183,14 @@ class MultiAgentRacecarFormationEnv:
             action_change = float(np.linalg.norm(current_action - prev_action))
             norm_jerk = action_change / max_action_change
 
-            if norm_jerk < self.smooth_threshold:
-                smoothness_reward_raw = self.smooth_positive_weight * (1.0 - norm_jerk / max(1e-6, self.smooth_threshold))
+            # Simplified: only penalize/reward smoothness when close to slot
+            if current_dist < self.gate_distance:
+                if norm_jerk < self.smooth_threshold:
+                    smoothness_reward = self.smooth_positive_weight * (1.0 - norm_jerk / max(1e-6, self.smooth_threshold))
+                else:
+                    smoothness_reward = -self.smooth_negative_slope * (norm_jerk - self.smooth_threshold)
             else:
-                smoothness_reward_raw = -self.smooth_negative_slope * (norm_jerk - self.smooth_threshold)
-            # gate by distance
-            smoothness_reward = math.exp(-((max(current_dist - self.gate_distance, 0.0) / max(1e-6, self.gate_scale)) ** 2)) * smoothness_reward_raw
+                smoothness_reward = 0.0
 
             # ==================== 7. Time penalty ====================
             # r_time = - (b0 + b1 * min(d/d_ref, cap))

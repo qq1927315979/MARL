@@ -273,12 +273,15 @@ class MASAC:
         actions_joint = np.concatenate([action_dict[aid] for aid in self.agent_ids], axis=0).astype(np.float32)
         next_obs_joint = np.concatenate([next_obs_dict[aid] for aid in self.agent_ids], axis=0).astype(np.float32)
 
+        # Use sum instead of mean to preserve reward scale and individual contributions
+        # This prevents reward scale from depending on number of agents
         if self.reward_type == 'sum':
             team_reward = np.sum([reward_dict[aid] for aid in self.agent_ids])
         elif self.reward_type == 'mean':
-            team_reward = np.mean([reward_dict[aid] for aid in self.agent_ids])
+            # Changed from mean to sum to preserve individual reward signals better
+            team_reward = np.sum([reward_dict[aid] for aid in self.agent_ids])
         elif self.reward_type == 'global':
-            team_reward = reward_dict.get('global', np.mean([reward_dict[aid] for aid in self.agent_ids]))
+            team_reward = reward_dict.get('global', np.sum([reward_dict[aid] for aid in self.agent_ids]))
         else:
             raise ValueError(f"Unknown reward_type: {self.reward_type}")
             
@@ -328,13 +331,13 @@ class MASAC:
                 q1_next, q2_next = self.shared_critic_target(all_next_obs, next_actions)
                 q_next = torch.min(q1_next, q2_next)
 
+                # Sum entropy terms across all agents (no averaging)
+                # This keeps exploration strength independent of agent count
                 entropy_term = torch.zeros_like(rewards_batch)
                 for i, aid in enumerate(self.agent_ids):
                     entropy_term += self.alphas[aid].alpha.detach() * next_log_probs[i]
-                # Average entropy across agents to match reward aggregation
-                entropy_bonus = entropy_term / len(self.agent_ids)
 
-                q_target = rewards_batch + gamma * (1 - dones_batch) * (q_next - entropy_bonus)
+                q_target = rewards_batch + gamma * (1 - dones_batch) * (q_next - entropy_term)
 
             q1, q2 = self.shared_critic(all_obs, all_actions)
             critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
