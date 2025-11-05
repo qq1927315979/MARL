@@ -232,7 +232,9 @@ class MultiAgentRacecarFormationEnv:
         self.leader_traj_pts: List[List[float]] = []
         self.leader_line_ids: List[int] = []
         self.formation_shadow_ids: List[int] = []
-        # Formation slot shadow markers
+        # Formation slot shadow markers (current position, gray)
+        self.predicted_shadow_ids: List[int] = []
+        # Formation slot shadow markers (predicted position, blue)
         self.boundary_line_ids: List[int] = []
         # Leader boundary dashed lines
         # Initialize formation offsets (must be initialized in all modes, as _get_world_slots needs it)
@@ -306,6 +308,7 @@ class MultiAgentRacecarFormationEnv:
         self.leader_traj_pts = []
         self.leader_line_ids = []
         self.formation_shadow_ids = []
+        self.predicted_shadow_ids = []
         if self.gui and self.render_enabled:
             self._init_leader_marker()
             self._init_target_marker()
@@ -739,22 +742,32 @@ class MultiAgentRacecarFormationEnv:
         # Initialize formation slot shadows (faint circular markers)
         try:
             self.formation_shadow_ids = []
-            world_slots = self._get_world_slots()
+            self.predicted_shadow_ids = []
 
+            # Current position slots (gray) - use current position for visualization
+            world_slots = self._get_world_slots(use_prediction=False)
             for i in range(self.n_agents):
                 slot_pos = world_slots[i]
-                # Create faint circular shadow (darker color for better visibility)
-                r = 0.3
-                # Radius slightly smaller than actual robot
-                col = p.createCollisionShape(p.GEOM_CYLINDER, radius=r, height=0.01)
+                r = 0.3  # Radius slightly smaller than actual robot
                 vis = p.createVisualShape(p.GEOM_CYLINDER, radius=r, length=0.01,
-                rgbaColor=[0.2, 0.2, 0.2, 0.5])
-                # Dark gray, transparency 0.5 (more visible)
+                                         rgbaColor=[0.2, 0.2, 0.2, 0.5])  # Dark gray
                 shadow_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=vis,
-                basePosition=[float(slot_pos[0]), float(slot_pos[1]), 0.01])
+                                             basePosition=[float(slot_pos[0]), float(slot_pos[1]), 0.01])
                 self.formation_shadow_ids.append(shadow_id)
+
+            # Predicted position slots (blue) - use prediction for training
+            predicted_slots = self._get_world_slots(use_prediction=True)
+            for i in range(self.n_agents):
+                slot_pos = predicted_slots[i]
+                r = 0.3
+                vis = p.createVisualShape(p.GEOM_CYLINDER, radius=r, length=0.01,
+                                         rgbaColor=[0.2, 0.4, 0.8, 0.4])  # Blue, more transparent
+                shadow_id = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=vis,
+                                             basePosition=[float(slot_pos[0]), float(slot_pos[1]), 0.02])
+                self.predicted_shadow_ids.append(shadow_id)
         except Exception:
             self.formation_shadow_ids = []
+            self.predicted_shadow_ids = []
 
     def _draw_leader_boundary(self):
         # Draw leader workspace boundary (dashed lines) - blue marks leader's 70% activity area
@@ -815,14 +828,28 @@ class MultiAgentRacecarFormationEnv:
             except Exception:
                 pass
 
-        # Update formation shadows (use current position for visualization, not prediction)
+        # Update formation shadows (gray: current position, blue: predicted position)
         if self.formation_shadow_ids:
             try:
+                # Current position slots (gray)
                 world_slots = self._get_world_slots(use_prediction=False)
                 for i, shadow_id in enumerate(self.formation_shadow_ids):
                     slot_pos = world_slots[i]
                     p.resetBasePositionAndOrientation(shadow_id,
                     [float(slot_pos[0]), float(slot_pos[1]), 0.01],
+                    [0, 0, 0, 1])
+            except Exception:
+                pass
+
+        # Update predicted formation shadows (blue)
+        if self.predicted_shadow_ids:
+            try:
+                # Predicted position slots (blue)
+                predicted_slots = self._get_world_slots(use_prediction=True)
+                for i, shadow_id in enumerate(self.predicted_shadow_ids):
+                    slot_pos = predicted_slots[i]
+                    p.resetBasePositionAndOrientation(shadow_id,
+                    [float(slot_pos[0]), float(slot_pos[1]), 0.02],
                     [0, 0, 0, 1])
             except Exception:
                 pass
