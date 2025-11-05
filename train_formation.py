@@ -60,7 +60,7 @@ def parse_args():
     # Train/Eval
     p.add_argument('--episodes', type=int, default=1000)
     p.add_argument('--updates-per-step', type=int, default=2)
-    p.add_argument('--warmup-steps', type=int, default=80000)
+    p.add_argument('--warmup-steps', type=int, default=20000)  # Reduced from 80k for faster convergence
     p.add_argument('--deterministic-eval', action='store_true')
     p.add_argument('--eval', action='store_true', help='run evaluation only (no updates)')
 
@@ -322,8 +322,11 @@ def main():
             grad_critic_avg = 0.0
             grad_actor_avg = {aid: 0.0 for aid in env.agent_ids}
 
+        # Print with Q-value monitoring for convergence diagnosis
+        alpha_avg = sum(alpha_dict.values()) / len(alpha_dict) if alpha_dict else 0.0
         print(f"[EP {ep:4d}/{args.episodes}] Steps={ep_len:3d} | R={ep_return:7.2f} | Slot={avg_slot_dist:.2f} | "
-              f"C={critic_loss_avg:.4f} A={actor_loss_avg:.4f} | {dt:.1f}s")
+              f"C={critic_loss_avg:.4f} A={actor_loss_avg:.4f} | Q={q1_mean_avg:.2f} Qt={q_target_mean_avg:.2f} | "
+              f"α={alpha_avg:.3f} | {dt:.1f}s")
 
         detailed_log = {
             "episode": ep,

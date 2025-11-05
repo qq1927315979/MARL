@@ -1129,14 +1129,17 @@ class MultiAgentRacecarFormationEnv:
             # Negative proximity cost (saturating with tanh): closer -> ~0, far -> -proximity_weight
             proximity_reward = - self.proximity_weight * math.tanh(current_dist / max(1e-6, self.proximity_scale))
 
-            # ==================== 2. Progress reward (potential shaping)
+            # ==================== 2. Progress reward (potential-based shaping) ====================
+            # Approximates F(s') - F(s) where F(s) = -distance_to_slot
+            # Clipped to prevent excessive reward from single large steps
             progress_reward = 0.0
             if aid in self.prev_distances:
                 dist_delta = float(self.prev_distances[aid] - current_dist)
+                # Clip to prevent single-step jumps from dominating
                 dist_delta = float(np.clip(dist_delta, -self.progress_clip, self.progress_clip))
-                pos = max(dist_delta, 0.0)
-                neg = min(dist_delta, 0.0)
-                progress_reward = self.progress_weight_pos * pos + self.progress_weight_neg * neg
+                # Use symmetric weights for theoretically sound potential shaping
+                # Positive delta (approaching) and negative delta (retreating) treated consistently
+                progress_reward = self.progress_weight_pos * dist_delta
 
             # ==================== 3. Velocity matching reward ====================
             slot_vel = self.slot_velocities[i]
@@ -1150,20 +1153,27 @@ class MultiAgentRacecarFormationEnv:
             else:
                 speed_reward = 0.0
 
-            # ==================== 4. Obstacle penalty ====================
+            # ==================== 4. Obstacle penalty (improved: smooth continuous penalty) ====================
             obstacle_penalty = 0.0
             lidar_reading = self.last_lidar_scans.get(aid, np.ones(self.num_rays, dtype=np.float32))
             min_obstacle_dist = float(np.min(lidar_reading)) * self.lidar_max_dist
 
-            safety_threshold = 3.0
-            danger_threshold = 1.0
+            # Multi-level continuous penalty for better gradient signal
+            critical_threshold = 0.5  # Very close - critical danger
+            danger_threshold = 1.0    # Close - danger zone
+            safety_threshold = 3.0    # Warning zone
 
-            if min_obstacle_dist < safety_threshold:
-                proximity_ratio = 1.0 - (min_obstacle_dist / safety_threshold)
-                if min_obstacle_dist < danger_threshold:
-                    obstacle_penalty = -3.0
-                else:
-                    obstacle_penalty = -1.0 * (proximity_ratio ** 2)
+            if min_obstacle_dist < critical_threshold:
+                # Critical: exponential penalty to strongly discourage
+                obstacle_penalty = -10.0 * math.exp(-(min_obstacle_dist / max(1e-6, critical_threshold)))
+            elif min_obstacle_dist < danger_threshold:
+                # Danger: strong quadratic penalty
+                proximity_ratio = 1.0 - (min_obstacle_dist - critical_threshold) / (danger_threshold - critical_threshold)
+                obstacle_penalty = -5.0 * (proximity_ratio ** 2)
+            elif min_obstacle_dist < safety_threshold:
+                # Warning: mild quadratic penalty
+                proximity_ratio = 1.0 - (min_obstacle_dist - danger_threshold) / (safety_threshold - danger_threshold)
+                obstacle_penalty = -1.0 * (proximity_ratio ** 2)
 
             # ==================== 5. Inter-agent distance penalty ====================
             neighbor_penalty = 0.0
@@ -1188,7 +1198,10 @@ class MultiAgentRacecarFormationEnv:
                 if norm_jerk < self.smooth_threshold:
                     smoothness_reward = self.smooth_positive_weight * (1.0 - norm_jerk / max(1e-6, self.smooth_threshold))
                 else:
-                    smoothness_reward = -self.smooth_negative_slope * (norm_jerk - self.smooth_threshold)
+                    # Cap the penalty to prevent unbounded negative rewards
+                    # Maximum penalty when norm_jerk reaches 1.0 (theoretical max)
+                    capped_jerk = min(norm_jerk - self.smooth_threshold, 1.0 - self.smooth_threshold)
+                    smoothness_reward = -self.smooth_negative_slope * capped_jerk
             else:
                 smoothness_reward = 0.0
 
