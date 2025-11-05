@@ -54,28 +54,28 @@ class MultiAgentRacecarFormationEnv:
         slot_smoothing_factor: float = 0.3,
         circular_obstacle_center: Optional[Tuple[float, float]] = None,
         circular_obstacle_radius: float = 5.0,
-        # Reward design parameters (rebalanced for stable training)
-        proximity_weight: float = 5.0,  # Increased from 3.0 for stronger distance signal
+        # Reward design parameters (optimized based on log analysis)
+        proximity_weight: float = 5.0,  # For tanh version (deprecated, see piecewise design below)
         proximity_scale: float = 2.5,
         progress_clip: float = 0.3,
-        progress_weight_pos: float = 5.0,  # Reduced from 50.0 to balance with other rewards
-        progress_weight_neg: float = 7.5,  # Reduced from 75.0 to balance with other rewards
-        gate_distance: float = 2.0,
+        progress_weight_pos: float = 2.0,  # P0-3: Reduced from 5.0 to prevent negative avg (log: -0.13)
+        progress_weight_neg: float = 2.0,  # Symmetric for potential-based shaping
+        gate_distance: float = 3.0,  # P2-6: Increased from 2.0 for better activation (log: 37.5%→60%)
         gate_scale: float = 3.0,
-        speed_weight: float = 2.0,
+        speed_weight: float = 4.0,  # P1-5: Increased from 2.0 to balance slot penalty in near range
         speed_sigma: float = 1.0,
         smooth_positive_weight: float = 0.5,
         smooth_negative_slope: float = 0.25,
         smooth_threshold: float = 0.3,
-        time_penalty_base: float = 0.1,  # Increased from 0.01 to be more noticeable
-        time_penalty_slope: float = 0.2,  # Increased from 0.02 to be more noticeable
+        time_penalty_base: float = 0.05,  # P0-2: Reduced from 0.1 for gentler penalty
+        time_penalty_slope: float = 0.05,  # P0-2: Reduced from 0.2 for gentler penalty
         time_penalty_ref_dist: float = 5.0,
         time_penalty_cap: float = 2.0,
         # Success rewards
         success_step_enabled: bool = True,
-        success_dist_threshold: float = 0.6,
-        success_vel_mismatch_threshold: float = 0.2,
-        success_step_reward: float = 1.0,
+        success_dist_threshold: float = 1.0,  # P1-4: Relaxed from 0.6 (log: 0% trigger)
+        success_vel_mismatch_threshold: float = 0.5,  # P1-4: Relaxed from 0.2
+        success_step_reward: float = 2.0,  # P1-4: Increased from 1.0
         success_terminal_enabled: bool = True,
         success_required_steps: int = 10,
         success_terminal_reward: float = 30.0,
@@ -1159,8 +1159,16 @@ class MultiAgentRacecarFormationEnv:
                 continue
 
             # ==================== 1. Slot distance: core reward ====================
-            # Negative proximity cost (saturating with tanh): closer -> ~0, far -> -proximity_weight
-            proximity_reward = - self.proximity_weight * math.tanh(current_dist / max(1e-6, self.proximity_scale))
+            # P0-1: Piecewise design to fix tanh saturation issue (log: 66.7% samples >10m with zero gradient)
+            # Far distance (>5m): linear with offset to ensure continuity
+            # Near distance (<=5m): quadratic penalty for fine control
+            if current_dist > 5.0:
+                proximity_reward = -0.5 * current_dist - 2.5  # Linear: gradient = -0.5 (vs tanh ~0.001)
+            else:
+                proximity_reward = -0.2 * (current_dist ** 2)  # Quadratic: stronger near target
+            # Continuity check at 5m: linear = -0.5*5 - 2.5 = -5.0, quadratic = -0.2*25 = -5.0 ✓
+            # At 10m: -0.5*10 - 2.5 = -7.5 (stronger than tanh -5.0, with constant gradient)
+            # At 0m: 0.0 (perfect alignment)
 
             # ==================== 2. Progress reward (potential-based shaping) ====================
             # Approximates F(s') - F(s) where F(s) = -distance_to_slot
@@ -1239,8 +1247,16 @@ class MultiAgentRacecarFormationEnv:
                 smoothness_reward = 0.0
 
             # ==================== 7. Time penalty ====================
-            # r_time = - (b0 + b1 * min(d/d_ref, cap))
-            time_penalty = - (self.time_penalty_base + self.time_penalty_slope * min(current_dist / max(1e-6, self.time_penalty_ref_dist), self.time_penalty_cap))
+            # P0-2: Fix logic error - successful formation maintenance should NOT be penalized
+            # Log showed: best sample (0.34m) still got -0.17 penalty, 1000 steps = -170!
+            if current_dist < 1.0:
+                time_penalty = 0.0  # Success: maintaining formation, no time penalty
+            else:
+                # Gentle increasing penalty for being far from target
+                time_penalty = - (self.time_penalty_base + self.time_penalty_slope * min(current_dist / max(1e-6, self.time_penalty_ref_dist), self.time_penalty_cap))
+            # At 0.5m: 0.0 (was -0.17)
+            # At 5m: -0.10 (was -0.30)
+            # At 10m+: -0.15 (was -0.50)
 
             # ==================== 8. Success rewards ====================
             success_step_bonus = 0.0
