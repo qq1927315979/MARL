@@ -815,10 +815,10 @@ class MultiAgentRacecarFormationEnv:
             except Exception:
                 pass
 
-        # Update formation shadows
+        # Update formation shadows (use current position for visualization, not prediction)
         if self.formation_shadow_ids:
             try:
-                world_slots = self._get_world_slots()
+                world_slots = self._get_world_slots(use_prediction=False)
                 for i, shadow_id in enumerate(self.formation_shadow_ids):
                     slot_pos = world_slots[i]
                     p.resetBasePositionAndOrientation(shadow_id,
@@ -886,12 +886,18 @@ class MultiAgentRacecarFormationEnv:
 
         return predicted_pos.astype(np.float32), predicted_heading
 
-    def _get_world_slots(self) -> List[np.ndarray]:
+    def _get_world_slots(self, use_prediction: bool = True) -> List[np.ndarray]:
         # Compute target formation slot positions relative to leader
-        # 1. Use predicted leader position for better tracking performance
-        predicted_pos, predicted_heading = self._predict_leader_position()
-        current_leader_pos = predicted_pos
-        current_heading = predicted_heading
+        # 1. Use predicted leader position for better tracking performance (training)
+        #    or current position for visualization (GUI)
+        if use_prediction:
+            predicted_pos, predicted_heading = self._predict_leader_position()
+            current_leader_pos = predicted_pos
+            current_heading = predicted_heading
+        else:
+            # For visualization: use actual current position
+            current_leader_pos = self.leader_pos
+            current_heading = self.leader_heading
 
         # 2. Calculate raw slots based on current position
         c, s = math.cos(current_heading), math.sin(current_heading)
