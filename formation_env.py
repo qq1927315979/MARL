@@ -744,8 +744,8 @@ class MultiAgentRacecarFormationEnv:
             self.formation_shadow_ids = []
             self.predicted_shadow_ids = []
 
-            # Current position slots (gray) - use current position for visualization
-            world_slots = self._get_world_slots(use_prediction=False)
+            # Current position slots (gray) - no smoothing for visualization
+            world_slots = self._get_world_slots(use_prediction=False, use_smoothing=False)
             for i in range(self.n_agents):
                 slot_pos = world_slots[i]
                 r = 0.3  # Radius slightly smaller than actual robot
@@ -755,8 +755,8 @@ class MultiAgentRacecarFormationEnv:
                                              basePosition=[float(slot_pos[0]), float(slot_pos[1]), 0.01])
                 self.formation_shadow_ids.append(shadow_id)
 
-            # Predicted position slots (blue) - use prediction for training
-            predicted_slots = self._get_world_slots(use_prediction=True)
+            # Predicted position slots (blue) - no smoothing for visualization
+            predicted_slots = self._get_world_slots(use_prediction=True, use_smoothing=False)
             for i in range(self.n_agents):
                 slot_pos = predicted_slots[i]
                 r = 0.3
@@ -831,8 +831,8 @@ class MultiAgentRacecarFormationEnv:
         # Update formation shadows (gray: current position, blue: predicted position)
         if self.formation_shadow_ids:
             try:
-                # Current position slots (gray)
-                world_slots = self._get_world_slots(use_prediction=False)
+                # Current position slots (gray) - no smoothing for visualization
+                world_slots = self._get_world_slots(use_prediction=False, use_smoothing=False)
                 for i, shadow_id in enumerate(self.formation_shadow_ids):
                     slot_pos = world_slots[i]
                     p.resetBasePositionAndOrientation(shadow_id,
@@ -844,8 +844,8 @@ class MultiAgentRacecarFormationEnv:
         # Update predicted formation shadows (blue)
         if self.predicted_shadow_ids:
             try:
-                # Predicted position slots (blue)
-                predicted_slots = self._get_world_slots(use_prediction=True)
+                # Predicted position slots (blue) - no smoothing for visualization
+                predicted_slots = self._get_world_slots(use_prediction=True, use_smoothing=False)
                 for i, shadow_id in enumerate(self.predicted_shadow_ids):
                     slot_pos = predicted_slots[i]
                     p.resetBasePositionAndOrientation(shadow_id,
@@ -913,7 +913,7 @@ class MultiAgentRacecarFormationEnv:
 
         return predicted_pos.astype(np.float32), predicted_heading
 
-    def _get_world_slots(self, use_prediction: bool = True) -> List[np.ndarray]:
+    def _get_world_slots(self, use_prediction: bool = True, use_smoothing: bool = True) -> List[np.ndarray]:
         # Compute target formation slot positions relative to leader
         # 1. Use predicted leader position for better tracking performance (training)
         #    or current position for visualization (GUI)
@@ -939,15 +939,15 @@ class MultiAgentRacecarFormationEnv:
             slot_pos = current_leader_pos + rotated_offset
             raw_slots.append(slot_pos)
 
-        # 3. Slot position smoothing
-        if self.prev_world_slots is None:
-            smoothed_slots = raw_slots
-        else:
+        # 3. Slot position smoothing (only for training, not for visualization)
+        if use_smoothing and self.prev_world_slots is not None:
             smoothed_slots = []
             alpha = float(self.slot_smoothing_factor)
             for raw, prev in zip(raw_slots, self.prev_world_slots):
                 smoothed = alpha * raw + (1 - alpha) * prev
                 smoothed_slots.append(smoothed.astype(np.float32))
+        else:
+            smoothed_slots = raw_slots
 
         # 4. Slot velocity (physically accurate): translation + rotation component
         # v_slot = v_leader + ω × r_i, where r_i is slot relative offset under current heading
