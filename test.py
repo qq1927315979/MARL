@@ -14,7 +14,7 @@ import torch
 from pathlib import Path
 import time
 
-from formation_env import FormationControlEnv
+from formation_env import MultiAgentRacecarFormationEnv
 from masac import MASAC
 
 
@@ -143,7 +143,7 @@ def main():
     print("=" * 80)
 
     # 创建环境
-    env = FormationControlEnv(
+    env = MultiAgentRacecarFormationEnv(
         n_agents=args.n_agents,
         gui=args.gui,
         seed=args.seed
