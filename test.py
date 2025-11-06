@@ -62,9 +62,9 @@ def infer_env_config_from_checkpoint(checkpoint, n_agents=3):
     # obs_dim = num_rays + 3*neighbor_max + 10
     # 需要推断num_rays和neighbor_max的组合
 
-    # 尝试常见的配置
-    for num_rays in [8, 12, 16, 20, 24, 32]:
-        for neighbor_max in [2, 4, 6, 8, 10]:
+    # 尝试常见的配置（扩大搜索范围）
+    for num_rays in [8, 12, 16, 20, 24, 28, 32, 40, 48, 49, 52, 64, 73]:
+        for neighbor_max in range(0, 25):  # 0到24
             expected_obs_dim = num_rays + 3 * neighbor_max + 10
             if expected_obs_dim == obs_dim:
                 return num_rays, neighbor_max
