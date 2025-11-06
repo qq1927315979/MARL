@@ -45,16 +45,12 @@ def load_model(checkpoint_path, env, device='cpu'):
     """加载训练好的模型"""
     print(f"正在加载模型: {checkpoint_path}")
 
-    # 创建MASAC实例
-    agent_ids = env.agent_ids
-    obs_dims = [env.obs_dim for _ in agent_ids]
-    act_dims = [env.action_dim for _ in agent_ids]
+    # 创建MASAC实例 - 使用dim_info字典
+    dim_info = env.get_dim_info()  # 返回 {agent_id: (obs_dim, action_dim)}
 
     masac = MASAC(
-        agent_ids=agent_ids,
-        obs_dims=obs_dims,
-        act_dims=act_dims,
-        device=torch.device(device)
+        dim_info=dim_info,
+        device=device
     )
 
     # 加载checkpoint
@@ -64,7 +60,7 @@ def load_model(checkpoint_path, env, device='cpu'):
     masac.shared_critic.load_state_dict(checkpoint['critic_state_dict'])
     masac.shared_critic_target.load_state_dict(checkpoint['critic_target_state_dict'])
 
-    for i, aid in enumerate(agent_ids):
+    for i, aid in enumerate(masac.agent_ids):
         masac.actors[aid].load_state_dict(checkpoint[f'actor_{i}_state_dict'])
         masac.alphas[aid].alpha.data = checkpoint[f'alpha_{i}']
 
