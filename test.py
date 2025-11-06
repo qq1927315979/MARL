@@ -3,7 +3,7 @@
 测试脚本：加载训练好的模型并在GUI模式下可视化
 
 用法:
-    python test.py --checkpoint checkpoints/masac_ep100.pt --episodes 5
+    python test.py --checkpoint checkpoints/masac_ep600.pt --episodes 5
 
     如果没有checkpoint文件，会使用随机策略进行测试
 """
@@ -38,12 +38,50 @@ def parse_args():
                         help='随机种子')
     parser.add_argument('--slow-motion', type=float, default=0.0,
                         help='慢动作模式：每步后暂停的秒数（例如0.01）')
+
+    # 环境配置参数（用于匹配训练时的配置）
+    parser.add_argument('--num-rays', type=int, default=16,
+                        help='激光雷达射线数量（需要和训练时一致）')
+    parser.add_argument('--neighbor-max', type=int, default=8,
+                        help='最大邻居数量（需要和训练时一致）')
+
     return parser.parse_args()
+
+
+def infer_env_config_from_checkpoint(checkpoint, n_agents=3):
+    """从checkpoint推断环境配置"""
+    # 从critic网络的第一层权重推断总输入维度
+    critic_input_dim = checkpoint['critic']['q1_fc1.weight'].shape[1]
+
+    # Critic输入 = n_agents * (obs_dim + action_dim)
+    # action_dim = 2 (固定)
+    obs_plus_act = critic_input_dim // n_agents
+    obs_dim = obs_plus_act - 2  # action_dim = 2
+
+    # obs_dim = num_rays + 2 + 1 + 1 + 3*neighbor_max + 2 + 2 + 1 + 1
+    # obs_dim = num_rays + 3*neighbor_max + 10
+    # 需要推断num_rays和neighbor_max的组合
+
+    # 尝试常见的配置
+    for num_rays in [8, 12, 16, 20, 24, 32]:
+        for neighbor_max in [2, 4, 6, 8, 10]:
+            expected_obs_dim = num_rays + 3 * neighbor_max + 10
+            if expected_obs_dim == obs_dim:
+                return num_rays, neighbor_max
+
+    # 如果找不到，使用默认值并警告
+    print(f"⚠️  无法从checkpoint推断环境配置！")
+    print(f"   期望obs_dim={obs_dim}, 但找不到匹配的num_rays和neighbor_max组合")
+    print(f"   使用默认值: num_rays=16, neighbor_max=8")
+    return 16, 8
 
 
 def load_model(checkpoint_path, env, device='cpu'):
     """加载训练好的模型"""
     print(f"正在加载模型: {checkpoint_path}")
+
+    # 加载checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # 创建MASAC实例 - 使用dim_info字典
     dim_info = env.get_dim_info()  # 返回 {agent_id: (obs_dim, action_dim)}
@@ -53,13 +91,30 @@ def load_model(checkpoint_path, env, device='cpu'):
         device=device
     )
 
-    # 加载checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
     # 使用MASAC自带的load方法
-    masac.load(checkpoint)
+    try:
+        masac.load(checkpoint)
+        print(f"✓ 模型加载成功！")
+    except RuntimeError as e:
+        if "size mismatch" in str(e):
+            print(f"❌ 模型维度不匹配！")
+            print(f"   错误详情: {e}")
+            print(f"\n💡 这通常是因为训练时和测试时的环境配置不同")
+            print(f"   当前环境obs_dim={env.obs_dim}")
 
-    print(f"✓ 模型加载成功！")
+            # 尝试推断正确的配置
+            critic_input_dim = checkpoint['critic']['q1_fc1.weight'].shape[1]
+            print(f"   checkpoint期望的critic输入维度={critic_input_dim}")
+
+            num_rays, neighbor_max = infer_env_config_from_checkpoint(checkpoint, env.n_agents)
+            print(f"\n推荐的解决方案：")
+            print(f"   python test.py --checkpoint {checkpoint_path} \\")
+            print(f"                  --num-rays {num_rays} \\")
+            print(f"                  --neighbor-max {neighbor_max}")
+            raise
+        else:
+            raise
+
     print(f"  - Episode: {checkpoint.get('episode', 'unknown')}")
     print(f"  - Global steps: {checkpoint.get('global_steps', 'unknown')}")
 
@@ -81,7 +136,8 @@ def test_episode(env, masac, max_steps=1000, deterministic=True, slow_motion=0.0
             action_dict = masac.select_action(obs_dict, deterministic=deterministic)
         else:
             # 随机策略
-            action_dict = {aid: env.action_space[aid].sample() for aid in env.agent_ids}
+            action_dict = {aid: np.random.uniform(-1, 1, size=env.action_dim).astype(np.float32)
+                          for aid in env.agent_ids}
 
         # 执行动作
         next_obs_dict, reward_dict, done_dict, truncated_dict, info = env.step(action_dict)
@@ -130,15 +186,21 @@ def main():
     print(f"  - Episodes: {args.episodes}")
     print(f"  - GUI: {'是' if args.gui else '否'}")
     print(f"  - 确定性策略: {'是' if args.deterministic else '否'}")
-    print(f"  - 慢动作: {args.slow_motion}s/step" if args.slow_motion > 0 else "")
+    if args.slow_motion > 0:
+        print(f"  - 慢动作: {args.slow_motion}s/step")
+    print(f"  - 环境配置: num_rays={args.num_rays}, neighbor_max={args.neighbor_max}")
     print("=" * 80)
 
-    # 创建环境
+    # 创建环境 - 使用命令行参数指定的配置
     env = MultiAgentRacecarFormationEnv(
         n_agents=args.n_agents,
+        num_rays=args.num_rays,
+        neighbor_max=args.neighbor_max,
         gui=args.gui,
         seed=args.seed
     )
+
+    print(f"环境信息: obs_dim={env.obs_dim}, action_dim={env.action_dim}")
 
     # 加载模型
     masac = None
@@ -148,7 +210,12 @@ def main():
             print(f"⚠️  Checkpoint文件不存在: {args.checkpoint}")
             print(f"⚠️  将使用随机策略进行测试")
         else:
-            masac = load_model(args.checkpoint, env)
+            try:
+                masac = load_model(args.checkpoint, env)
+            except RuntimeError:
+                print(f"\n❌ 加载失败！请根据上面的提示调整命令行参数后重试。")
+                env.close()
+                return
     else:
         print("未指定checkpoint，使用随机策略")
 
