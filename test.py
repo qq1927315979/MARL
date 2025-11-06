@@ -46,9 +46,9 @@ def load_model(checkpoint_path, env, device='cpu'):
     print(f"正在加载模型: {checkpoint_path}")
 
     # 创建MASAC实例
-    agent_ids = [f'agent_{i}' for i in range(env.n_agents)]
-    obs_dims = [env.observation_space[aid].shape[0] for aid in agent_ids]
-    act_dims = [env.action_space[aid].shape[0] for aid in agent_ids]
+    agent_ids = env.agent_ids
+    obs_dims = [env.obs_dim for _ in agent_ids]
+    act_dims = [env.action_dim for _ in agent_ids]
 
     masac = MASAC(
         agent_ids=agent_ids,
