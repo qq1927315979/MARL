@@ -27,6 +27,7 @@ runs/
 *.pt
 *.pth
 *.ckpt
+*.log
 
 # IDE
 .vscode/
