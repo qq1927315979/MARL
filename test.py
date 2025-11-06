@@ -54,15 +54,10 @@ def load_model(checkpoint_path, env, device='cpu'):
     )
 
     # 加载checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # 加载模型参数
-    masac.shared_critic.load_state_dict(checkpoint['critic_state_dict'])
-    masac.shared_critic_target.load_state_dict(checkpoint['critic_target_state_dict'])
-
-    for i, aid in enumerate(masac.agent_ids):
-        masac.actors[aid].load_state_dict(checkpoint[f'actor_{i}_state_dict'])
-        masac.alphas[aid].alpha.data = checkpoint[f'alpha_{i}']
+    # 使用MASAC自带的load方法
+    masac.load(checkpoint)
 
     print(f"✓ 模型加载成功！")
     print(f"  - Episode: {checkpoint.get('episode', 'unknown')}")
